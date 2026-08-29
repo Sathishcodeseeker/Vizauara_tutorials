@@ -1,608 +1,646 @@
-# Agentic AI Design for Aeronautical Data Production
+# SSE, LangGraph, and Production Security for an AIP Chatbot
 
-## Interview Pitch
+This document is a standalone reference for the concepts discussed after introducing Server-Sent Events (SSE) in the AIP/ADP agent architecture. It explains Python asynchronous execution, browser streaming, LangGraph events, distributed messaging, production debugging, and sensitive-data protection.
 
-### 60-second pitch
+The examples assume Python 3.11+, FastAPI, LangGraph, a browser chatbot, and governed AIP/ADP data sources.
 
-Aeronautical Data Production teams process source material such as AIP amendments, supplements, NOTAM, and standards documents. This work requires specialists to identify changes, compare them with approved data, validate effective dates and aeronautical relationships, assess downstream impact, and preserve traceability.
+## 1. The Core Mental Model
 
-I propose an **Aeronautical Data Change-Impact and Validation Copilot**. It ingests authorized source documents, extracts candidate changes into a strict schema, compares them with the approved aeronautical database, runs deterministic AIXM, temporal, and geospatial validations, and presents a cited draft to a human reviewer.
-
-The LLM is used for language understanding, extraction, orchestration, and explanation. Deterministic services perform calculations and validation. The agent cannot publish data autonomously, and the existing approved production system remains the system of record.
-
-The user experience is a structured ADP review workbench with a contextual chatbot. Python and FastAPI provide the backend, Azure AI Search provides hybrid retrieval, PostgreSQL/PostGIS supports structured and geospatial data, Azure Service Bus handles durable asynchronous work, and every decision is observable and auditable.
-
-## 1. Problem Statement
-
-An ADP specialist may need to perform the following work when a new source document arrives:
-
-1. Find relevant changes within a large document.
-2. Determine which aeronautical features are affected.
-3. Compare new values with currently approved values.
-4. Verify units, identifiers, coordinates, dates, and relationships.
-5. Determine the appropriate AIRAC applicability.
-6. Find dependent procedures, charts, routes, or other products.
-7. Enter the changes into a production workflow.
-8. Provide evidence to a second reviewer.
-
-This process is safety-sensitive, time-consuming, and vulnerable to missed changes or transcription errors.
-
-## 2. Proposed Use Case
-
-When a new AIP amendment, supplement, NOTAM, or related source document arrives, the agent:
-
-1. Classifies the document and determines its version and effective date.
-2. Identifies sections containing aeronautical changes.
-3. Extracts candidate changes into a typed data contract.
-4. Retrieves the corresponding approved records.
-5. Shows an old-versus-new comparison.
-6. Runs deterministic validation.
-7. Finds potentially affected dependent features and products.
-8. Attaches page- and section-level source evidence.
-9. Creates a draft review item.
-10. Waits for a qualified human to approve, correct, or reject it.
-
-The agent is a **copilot for the data producer**, not an autonomous publisher or flight-planning authority.
-
-## 3. Concrete Example
-
-### Existing approved data
+For a normal chatbot response:
 
 ```text
-Aerodrome:       VOBL
-Runway:          09L/27R
-TORA:            4000 M
-Status:          Available
+LLM
+ │ produces text chunks
+ ▼
+FastAPI
+ │ sends SSE events
+ ▼
+Browser chatbot
 ```
 
-### New source document
+Four different responsibilities are involved:
 
-```text
-Effective 01 October 2026:
-
-Due to a displaced-threshold amendment, runway 09L TORA is
-reduced from 4000 metres to 3970 metres. Threshold coordinates
-are amended as follows: ...
-```
-
-### Agent output
-
-```text
-Detected change
-────────────────────────────────────────────────────────
-Feature:             Runway 09L
-Aerodrome:           VOBL
-Attribute:           TORA
-Approved value:      4000 M
-Proposed value:      3970 M
-Effective date:      01 October 2026
-Source:              AIP Amendment 08/2026
-Page and section:    Page 142, AD 2.12
-Extraction confidence: 96%
-
-Potentially affected products:
-- Declared-distance table
-- Aerodrome chart
-- Procedures referencing runway 09L
-- Flight-planning data
-
-Validation:
-✓ Aerodrome and runway exist
-✓ Unit is permitted
-✓ Proposed TORA does not exceed runway length
-✓ Effective date is recognized
-⚠ Threshold-coordinate change requires human verification
-```
-
-The specialist reviews the source and proposal side by side, then selects **Approve**, **Correct**, or **Reject**.
-
-## 4. User Experience
-
-A pure chatbot is not sufficient for production work. The primary interface is a structured review workbench, with chat available inside the current work-item context.
-
-```text
-┌──────────────────────────────────────────────────────────────┐
-│ Work item: AIP Amendment 08/2026                  VALIDATED │
-├────────────────────────────┬─────────────────────────────────┤
-│ Source document            │ Proposed change                 │
-│                            │                                 │
-│ Page 142, AD 2.12          │ Runway: VOBL 09L               │
-│                            │ TORA: 4000 M → 3970 M           │
-│ “TORA is reduced...”       │ Effective: 01-Oct-2026         │
-├────────────────────────────┴─────────────────────────────────┤
-│ Validation                                                   │
-│ ✓ Feature exists                                             │
-│ ✓ Unit and range valid                                       │
-│ ⚠ Coordinate verification required                           │
-├──────────────────────────────────────────────────────────────┤
-│ [Approve] [Correct] [Reject] [Request Information]           │
-├──────────────────────────────────────────────────────────────┤
-│ Ask: [Why was this procedure marked as affected?          ]  │
-└──────────────────────────────────────────────────────────────┘
-```
-
-### Example chatbot questions
-
-- “Summarize the changes in AIP Amendment 08/2026.”
-- “What changed for VOBL?”
-- “Compare this amendment with the current approved data.”
-- “Show the source for the new TORA value.”
-- “Why did this AIXM validation rule fail?”
-- “Which procedures reference this NAVAID?”
-- “What becomes effective in the next AIRAC cycle?”
-- “Create a draft change request for this amendment.”
-
-## 5. High-Level Architecture
-
-```mermaid
-flowchart TD
-    U[ADP Review Workbench<br/>Structured UI and Chat] --> A[API Gateway / FastAPI]
-    A --> I[Authentication and Authorization]
-    I --> O[Agent Orchestrator]
-
-    O --> DS[Document Search Tool]
-    O --> FS[Feature Data Tool]
-    O --> VS[Validation Tool]
-    O --> IS[Impact Analysis Tool]
-    O --> WS[Draft Workflow Tool]
-
-    DS --> SEARCH[Azure AI Search]
-    DS --> BLOB[Blob Storage]
-    FS --> ADP[Approved ADP APIs / Database]
-    VS --> AIXM[AIXM XSD, Schematron,<br/>and Business Rules]
-    IS --> POSTGIS[PostgreSQL / PostGIS]
-    WS --> BUS[Azure Service Bus]
-
-    O --> LLM[Approved Enterprise LLM]
-    O --> OBS[OpenTelemetry / Application Insights]
-```
-
-### Runtime principle
-
-The LLM does not receive an unrestricted database or shell connection. It can call only narrow, validated tools with typed inputs and outputs.
-
-```text
-Understand question
-       ↓
-Select permitted tools
-       ↓
-Retrieve evidence and structured data
-       ↓
-Run deterministic validation
-       ↓
-Generate an answer with citations and warnings
-       ↓
-Return to user or request human approval
-```
-
-## 6. Chatbot Request Flow
-
-Suppose the user asks:
-
-> Why is the TORA of VOBL runway 09L changing, and which procedures might be affected?
-
-### Step 1: Frontend request
-
-```json
-{
-  "conversation_id": "conv-123",
-  "work_item_id": "AMDT-08-2026",
-  "question": "Why is VOBL runway 09L TORA changing?",
-  "effective_at": "2026-10-01T00:00:00Z"
-}
-```
-
-### Step 2: Authorization
-
-The backend verifies:
-
-- The user's identity and role.
-- The countries and datasets the user may access.
-- Whether the user has read-only, producer, validator, or administrator permissions.
-- Whether the requested operation is read-only or creates a draft.
-
-### Step 3: Structured tool plan
-
-```json
-{
-  "intent": "explain_change",
-  "tools": [
-    "search_source_documents",
-    "get_current_feature",
-    "get_proposed_change",
-    "find_feature_dependencies"
-  ],
-  "requires_write": false
-}
-```
-
-### Step 4: Evidence retrieval
-
-The document-search tool uses metadata-filtered hybrid retrieval to locate the exact source section. It returns the text along with document ID, version, page, section, and access classification.
-
-### Step 5: Structured-data retrieval
-
-The feature-data tool retrieves the approved feature version that is valid for the requested effective time.
-
-### Step 6: Deterministic analysis
-
-Validation and impact tools check units, ranges, temporal applicability, spatial relationships, and feature dependencies.
-
-### Step 7: Grounded response
-
-The LLM explains the collected results without inventing missing evidence:
-
-```text
-AIP Amendment 08/2026 changes runway 09L TORA from 4000 M to
-3970 M, effective 1 October 2026. The stated reason is a
-displaced-threshold amendment.
-
-Potentially affected products include the declared-distance table,
-the aerodrome chart, and two procedures referencing runway 09L.
-Coordinate verification remains pending.
-
-Source: AIP Amendment 08/2026, AD 2.12, page 142.
-```
-
-## 7. Agent Tools
-
-The agent should have a small, explicit set of tools:
-
-```text
-search_source_documents()
-open_document_page()
-get_current_feature()
-get_feature_at_effective_time()
-get_proposed_change()
-compare_feature_versions()
-find_feature_dependencies()
-run_aixm_validation()
-run_temporal_validation()
-run_spatial_impact_check()
-create_draft_change()
-submit_for_human_review()
-```
-
-Each tool must define:
-
-- A strict input schema.
-- A strict output schema.
-- Required authorization.
-- Expected errors.
-- Whether it has side effects.
-- Timeout and retry behavior.
-- Audit information.
-
-Production-access tools should initially be read-only.
-
-## 8. LLM and Deterministic Responsibility Boundary
-
-### Appropriate LLM responsibilities
-
-- Understanding natural-language questions.
-- Document classification.
-- Candidate field extraction.
-- Mapping document language to domain concepts.
-- Selecting permitted tools.
-- Summarizing and explaining results.
-- Explaining validation failures.
-
-### Deterministic responsibilities
-
-- Coordinate and reference-system processing.
-- Unit conversion.
-- Date and temporal calculations.
-- Geometry intersection and containment.
-- AIXM schema and business-rule validation.
-- Dependency lookup.
-- Approved version selection.
-- Flight-route calculations.
-- Authorization and workflow transitions.
-
-### Human responsibilities
-
-- Resolving ambiguous source material.
-- Verifying safety-significant changes.
-- Correcting extraction errors.
-- Approving or rejecting proposed changes.
-- Authorizing production publication.
-
-## 9. Data and Retrieval Strategy
-
-The system must not send entire document collections to the LLM. It should retrieve only the evidence needed for the current question.
-
-### Search index metadata
-
-Each indexed passage should include:
-
-```text
-document_id
-document_type
-document_version
-state_or_region
-aerodrome_identifier
-section
-page
-effective_from
-effective_to
-ingestion_timestamp
-access_classification
-source_checksum
-```
-
-Hybrid retrieval is preferred because exact identifiers, procedure names, document sections, dates, and codes benefit from keyword search, while descriptive questions benefit from semantic vector search.
-
-The system must apply authorization filters before retrieval, not after generating the answer.
-
-## 10. AIXM and Aeronautical Validation
-
-Support the AIXM version required by actual source and downstream contracts. The latest version should not be adopted solely because it is newer.
-
-Validation should include:
-
-- XSD validation.
-- Schematron validation.
-- Applicable AIXM business rules.
-- Internal ADP business rules.
-- Feature-reference integrity.
-- Identifier uniqueness.
-- Temporality and effective-date validation.
-- Coordinate and spatial-reference validation.
-- Permitted units and value ranges.
-- Cross-feature consistency.
-- Old-versus-new comparison.
-
-The approved ADP system remains the authoritative source. Vector search and LLM conversation history are never systems of record.
-
-## 11. Event-Driven Workflow
-
-### Workflow state
-
-```mermaid
-stateDiagram-v2
-    [*] --> Received
-    Received --> Parsed
-    Parsed --> Extracted
-    Extracted --> Validated
-    Validated --> ReviewRequired
-    ReviewRequired --> Approved
-    ReviewRequired --> Corrected
-    ReviewRequired --> Rejected
-    Corrected --> Validated
-    Approved --> Exported
-    Rejected --> [*]
-    Exported --> [*]
-```
-
-### Azure Service Bus
-
-Use Service Bus for durable commands and long-running work:
-
-```text
-process-source-document
-extract-candidate-changes
-validate-change-set
-calculate-change-impact
-request-human-review
-export-approved-draft
-```
-
-Recommended messaging patterns:
-
-- Peek-lock and explicit completion.
-- Idempotency using `work_item_id + stage + source_version`.
-- Dead-letter queues for poison messages.
-- Bounded retries with exponential backoff.
-- Sessions when updates for the same work item must remain ordered.
-- A transactional outbox when database updates and event publication must remain consistent.
-
-### Redis
-
-Use Redis for:
-
-- Short-lived caching.
-- Rate limiting.
-- Temporary progress state.
-- Carefully scoped distributed locks.
-
-Do not use Redis as the authoritative aeronautical-data store.
-
-### Kafka
-
-Kafka is optional. Use it only when an existing enterprise event platform needs to distribute approved ADP events independently to chart production, navigation data, flight planning, audit, analytics, and notifications.
-
-Do not add Kafka to the MVP merely to make the architecture appear more sophisticated.
-
-## 12. Core Technology Stack
-
-| Responsibility | Recommended technology |
+| Component | Responsibility |
 |---|---|
-| Frontend | Existing Angular/React application |
-| Chat streaming | Server-Sent Events or WebSocket |
-| Backend API | Python and FastAPI |
-| Typed contracts | Pydantic |
-| Agent orchestration | Explicit state machine; optional LangGraph inside a worker |
-| Durable workflow | Azure Durable Functions or Temporal where appropriate |
-| LLM | Approved enterprise model with tool calling and structured output |
-| Original documents | Azure Blob Storage with versioning |
-| Document extraction | Azure AI Document Intelligence and deterministic XML/PDF parsers |
-| Retrieval | Azure AI Search with keyword, vector, and metadata filters |
-| Application data | PostgreSQL |
-| Geospatial data | PostGIS, Shapely, GeoPandas, and PyProj |
-| AIXM processing | `lxml`, XSD, Schematron, and applicable business rules |
-| Messaging | Azure Service Bus |
-| Cache | Redis when necessary |
-| Enterprise event log | Kafka only when organizationally justified |
-| Identity | Microsoft Entra ID and managed identities |
-| Secrets | Azure Key Vault |
-| Observability | OpenTelemetry and Application Insights |
-| Testing | pytest plus domain-specific evaluation datasets |
-| Deployment | Azure Container Apps, AKS, or the approved internal platform |
+| LLM streaming API | Produces incremental text deltas |
+| `asyncio` / `async` and `await` | Lets Python perform non-blocking concurrent I/O |
+| SSE | Carries server events to the browser over HTTP |
+| Browser code | Renders statuses, sources, tokens, errors, and completion |
 
-## 13. Safety and Security Controls
+The streamed unit is normally a text delta. It is not guaranteed to be exactly one word or one model token.
 
-### Data protection
+> `asyncio` controls non-blocking execution; SSE is the delivery channel to the browser.
 
-- Use only authorized and properly licensed ICAO and aeronautical documents.
-- Encrypt data in transit and at rest.
-- Use private network access where required.
-- Store secrets in Key Vault.
-- Use managed identities rather than embedded credentials.
-- Redact sensitive content from prompts and telemetry.
+## 2. `asyncio` Is Not Redis Streams
 
-### Agent controls
+They operate at different layers:
 
-- Permit only allowlisted tools.
-- Apply authorization inside every tool.
-- Treat retrieved document content as untrusted data, not instructions.
-- Require structured model output.
-- Validate all tool arguments.
-- Apply time, token, tool-call, and retry limits.
-- Require human approval for mutations and publication.
-- Record the model, prompt version, sources, tool calls, and outputs.
+| `asyncio` | Redis Streams |
+|---|---|
+| Runs concurrent I/O inside a Python process | Moves and stores events between processes or services |
+| Uses coroutines, tasks, `async`, and `await` | Uses an append-only stream, IDs, reads, and consumer groups |
+| Does not persist application events | Can retain events for later reading or replay |
+| Required for efficient asynchronous FastAPI code | Optional infrastructure for distributed architectures |
 
-### Operational boundary
+Redis Streams cannot replace `asyncio`. A service reading Redis asynchronously still uses an asynchronous Redis client and Python's async execution model.
 
-The agent may recommend or create a draft. It must not independently certify, publish, or operationally authorize safety-significant aeronautical data.
+### Direct chatbot path
 
-## 14. Reliability Strategy
-
-Agent and message execution should assume at-least-once processing.
+Use this for ordinary AIP questions:
 
 ```text
-Receive message
-      ↓
-Check idempotency key
-      ↓
-Process and validate
-      ↓
-Atomically save result and processed-event record
-      ↓
-Acknowledge message
+Browser → FastAPI → AIP retrieval/MCP → LLM
+Browser ←────── SSE answer stream ─────┘
 ```
 
-Additional controls:
+Examples:
 
-- Retry only transient failures.
-- Dead-letter permanent or repeatedly failing messages.
-- Never acknowledge before durable result storage.
-- Make tools idempotent where possible.
-- Use correlation IDs across UI, API, broker, agent, and tools.
-- Store checkpoints for resumable workflows.
-- Return “insufficient evidence” rather than guessing.
+- “What does AIRAC mean?”
+- “Show the runway information for VOBL.”
+- “Summarize the cited changes on this amendment page.”
 
-## 15. Evaluation Strategy
+Redis Streams is not required.
 
-Before building the model workflow, create a golden dataset from historical ADP work items.
+### Distributed-worker path
 
-### Offline evaluation
+Redis Streams can be introduced when the LLM or graph runs in another service and replayable events are required:
 
-- Document retrieval recall.
-- Field-level extraction precision and recall.
-- Old-versus-new comparison accuracy.
-- Effective-date accuracy.
-- Citation correctness.
-- Validation-rule coverage.
-- Dependency-impact recall.
-- Hallucination and unsupported-claim rate.
+```text
+LLM/Agent Worker
+      │ XADD events
+      ▼
+Redis Stream
+      │ async read
+      ▼
+FastAPI
+      │ SSE
+      ▼
+Browser
+```
 
-### Workflow evaluation
+Even here, both the worker and FastAPI still use asynchronous I/O.
 
-- Human acceptance rate.
-- Human correction rate by field.
-- Missed-change rate.
-- Incorrect-change rate.
-- Review time saved.
-- Retry and dead-letter frequency.
-- End-to-end latency and cost.
-- Unauthorized-action rate, with a target of zero.
+Writing every model token as a separate Redis entry usually creates unnecessary network traffic, storage, retention, and latency. If this design is genuinely required, send bounded text chunks or meaningful progress events and trim/expire the stream.
 
-### Release gate
+Consumer groups distribute entries among consumers in the same group. They do not automatically broadcast every entry to every browser. Design consumer IDs and replay behavior carefully.
 
-A new model, prompt, retrieval configuration, or tool version is released only after it passes the same regression dataset and safety tests.
+## 3. Recommended AIP Chatbot Usage
 
-## 16. MVP Plan
+```text
+Normal chatbot answer       → asyncio + SSE
+LLM/search/MCP network I/O  → asyncio
+Session and hot-data cache  → Redis key/value cache
+Live job-progress cache     → Redis cache, if needed
+Durable long-running job    → Azure Service Bus
+Enterprise domain events    → Kafka or Azure Event Hubs
+Cross-agent collaboration   → A2A
+Distributed replayable feed → Redis Streams, only if justified
+```
 
-### Phase 1: Discovery and evaluation data
+For the initial AIP chatbot, use:
 
-1. Interview data producers and validators.
-2. Select one repetitive, bounded scenario such as runway or NAVAID amendments.
-3. Collect historical source documents and their approved results.
-4. Remove or protect sensitive information.
-5. Create a golden test dataset.
+```text
+Browser → FastAPI → LangGraph → retrieval/MCP/LLM
+Browser ←──────────── SSE ────────────────┘
+```
 
-### Phase 2: Read-only assistant
+Add a durable broker for complete-amendment analysis or other work that can run for minutes, requires retries, or must survive a service restart.
 
-1. Ingest and index authorized documents.
-2. Build cited document search.
-3. Add read-only access to approved feature data.
-4. Support summary, source, comparison, and validation-explanation questions.
+## 4. What “SSE Is One-Way” Means
 
-### Phase 3: Change-extraction copilot
+One-way applies to the individual SSE connection, not to the entire browser.
 
-1. Extract structured candidate changes.
-2. Run deterministic validations.
-3. Add old-versus-new comparison.
-4. Add dependency-impact analysis.
-5. Present the result in a human review screen.
+```text
+SSE connection:  Server ─────────► Browser
+```
 
-### Phase 4: Controlled workflow integration
+The browser cannot send messages back through that open SSE response. It can open other HTTP requests at the same time:
 
-1. Allow creation of draft changes.
-2. Add Service Bus for long-running stages.
-3. Add approval and correction states.
-4. Integrate with the existing approved production workflow.
-5. Keep autonomous publication disabled.
+```text
+SSE:     Server ─────────► Browser   Stream events
+POST:    Browser ────────► Server    Submit question
+GET:     Browser ────────► Server    Load sources/history
+DELETE:  Browser ────────► Server    Cancel a run
+```
 
-### Phase 5: Route-impact explanation
+FastAPI can serve those requests concurrently when the handlers and libraries are properly asynchronous. Avoid blocking calls such as `time.sleep()`, synchronous network clients, or CPU-heavy document processing inside an async endpoint.
 
-After the ADP use case is proven, add a read-only assistant that explains how approved, effective aeronautical changes may affect a proposed route. Deterministic flight-planning and geospatial engines remain authoritative.
+### Two common API patterns
 
-## 17. Design Trade-offs
+#### Pattern A: one streaming POST
 
-### Why not begin with autonomous flight planning?
+```text
+POST /chat/stream
+Request body: question
+Response body: streamed SSE-formatted events
+```
 
-Operational flight planning requires more than ICAO documents. It depends on current approved aeronautical data, aircraft performance, weather, company policy, operational restrictions, and ATC constraints. The cost of an incorrect answer is high.
+The browser normally consumes this with the Fetch API because native `EventSource` does not submit a POST body.
 
-### Why not use only a vector database?
+#### Pattern B: create a run, then subscribe
 
-Vector retrieval is useful for semantic document search but is not authoritative for coordinates, dates, identifiers, versions, relationships, or spatial calculations. Those belong in structured systems and deterministic services.
+```text
+POST   /runs                    → returns run_id
+GET    /runs/{run_id}/events   → opens SSE connection
+DELETE /runs/{run_id}          → cancels generation
+```
 
-### Why not use only a chatbot?
+This pattern makes cancellation, reconnection, authorization, and run tracking explicit.
 
-Production review requires structured comparisons, warnings, corrections, approvals, and audit history. Chat is useful for investigation and explanation but not as the sole production interface.
+For one conversation, either queue new questions or cancel the active run before starting another. Unrelated browser requests can continue without cancelling SSE.
 
-### Why not start with multiple agents?
+## 5. SSE Event Design
 
-A single constrained orchestrator with explicit tools is easier to evaluate, secure, and audit. Sub-agents should be introduced only when independent bounded work demonstrates a measurable benefit.
+SSE does not search documents or run the LLM. It only transports events produced by the application.
 
-### Why use event-driven processing?
+Use structured event types:
 
-Large documents and impact analysis can take longer than an HTTP request. Durable messaging allows work to be retried, resumed, scaled, monitored, and dead-lettered without losing the user's request.
+| Event | Example purpose |
+|---|---|
+| `run_started` | The agent run was accepted |
+| `status` | A safe user-facing progress update |
+| `source` | A cited document/page was selected |
+| `tool_started` | An approved tool invocation began |
+| `tool_completed` | A tool finished successfully |
+| `token` | A final-answer text delta |
+| `approval_required` | Human confirmation is required |
+| `error` | A sanitized error occurred |
+| `done` | The run completed |
 
-## 18. Five-minute Interview Narrative
+Example wire format:
 
-1. **Problem:** ADP specialists manually identify, transcribe, validate, and trace changes across aeronautical source documents and production data.
-2. **Use case:** A change-impact and validation copilot prepares a cited draft for human review.
-3. **Architecture:** A structured UI and chatbot call a FastAPI backend. A constrained agent retrieves documents and approved data through typed tools, invokes deterministic validation services, and uses an LLM only to extract, orchestrate, and explain.
-4. **Data:** Originals are versioned in object storage, documents are retrieved through hybrid search, structured and spatial data live in authoritative databases, and every result includes source provenance and effective time.
-5. **Workflow:** Service Bus runs long-lived stages with idempotency, retries, dead-lettering, and human approval.
-6. **Safety:** The LLM cannot publish data, perform authoritative calculations, or bypass role-based access. The existing ADP system remains the source of truth.
-7. **Evaluation:** Historical approved work items become a golden dataset measuring retrieval, extraction, validation, citations, missed changes, human corrections, latency, and cost.
-8. **Rollout:** Start read-only with one bounded feature type, prove value, then add draft creation and broader impact analysis.
+```text
+event: status
+data: {"stage":"retrieval","message":"Searching AIP documents"}
 
-## 19. Key Interview Statement
+event: source
+data: {"document":"AIP AMDT 08/2026","page":42}
 
-> I am not replacing aeronautical data specialists with an LLM. I am building a controlled agent that retrieves evidence, prepares structured candidate changes, invokes deterministic domain tools, and reduces manual effort while preserving human authority, provenance, effective-time correctness, and auditability.
+event: token
+data: {"text":"The amendment contains"}
 
-## 20. References
+event: token
+data: {"text":" two candidate runway changes."}
 
-- [ICAO — Aeronautical Information Management](https://www.icao.int/airnavigation/aeronautical-information-management)
-- [AIXM — AIXM 5.2](https://aixm.aero/page/aixm-52)
-- [AIXM — Business Rules](https://aixm.aero/page/business-rules)
-- [AIXM — Data Verification](https://aixm.aero/page/data-verification)
-- [EUROCONTROL — Digital NOTAM Specification](https://ext.eurocontrol.int/aixm_confluence/display/DNOTAM/Digital%2BNOTAM%2BSpecification)
-- [Microsoft — Azure AI Search Hybrid Search](https://learn.microsoft.com/en-us/azure/search/hybrid-search-overview)
-- [Microsoft — Azure Document Intelligence Layout Model](https://learn.microsoft.com/en-us/azure/ai-services/document-intelligence/prebuilt/layout)
-- [Microsoft — Prevent Message Loss and Duplicate Processing in Azure Service Bus](https://learn.microsoft.com/en-us/azure/service-bus-messaging/service-bus-message-loss-and-duplicates)
-- [PostGIS — Spatial Data Management](https://postgis.net/docs/en/using_postgis_dbmanagement.html)
+event: done
+data: {"status":"completed"}
+```
+
+The frontend switches on the event name instead of parsing ordinary answer text to guess what the agent is doing.
+
+Do not stream private chain-of-thought, raw prompts, credentials, authorization tokens, or complete graph state.
+
+## 6. How LangGraph Connects to SSE
+
+SSE is not embedded in a LangGraph node. The layers are:
+
+```text
+LangGraph node
+     │ emits a graph/custom event
+     ▼
+LangGraph runtime stream
+     │ consumed by
+     ▼
+FastAPI adapter or LangGraph Agent Server
+     │ serialized as SSE
+     ▼
+Browser
+```
+
+### LangGraph streaming modes
+
+Important modes include:
+
+| Mode | Meaning |
+|---|---|
+| `updates` | State updates after graph steps |
+| `messages` | LLM message/token chunks plus metadata |
+| `custom` | Application-defined progress emitted by nodes/tools |
+| `tasks` | Task start/finish and related runtime events |
+
+Do not expose these modes directly to users without filtering. State and debug events can contain sensitive internal data.
+
+### Emit a safe event inside a node
+
+```python
+from langgraph.config import get_stream_writer
+
+
+async def search_aip_node(state: dict) -> dict:
+    writer = get_stream_writer()
+
+    writer({
+        "event": "status",
+        "stage": "retrieval",
+        "message": "Searching authorized AIP documents",
+    })
+
+    documents = await search_aip(state["question"])
+
+    writer({
+        "event": "sources_found",
+        "count": len(documents),
+    })
+
+    return {"documents": documents}
+```
+
+The node reports domain progress. It does not import FastAPI, know about HTTP, or format SSE frames.
+
+### Translate LangGraph events in FastAPI
+
+```python
+import json
+
+from fastapi import FastAPI
+from fastapi.sse import EventSourceResponse, ServerSentEvent
+
+app = FastAPI()
+
+
+@app.post("/chat/stream", response_class=EventSourceResponse)
+async def stream_chat(request: ChatRequest):
+    async for part in graph.astream(
+        {"question": request.question},
+        stream_mode=["custom", "messages"],
+        version="v2",
+    ):
+        if part["type"] == "custom":
+            payload = part["data"]
+            yield ServerSentEvent(
+                event=payload["event"],
+                data=json.dumps(payload),
+            )
+
+        elif part["type"] == "messages":
+            message_chunk, metadata = part["data"]
+            if message_chunk.content:
+                yield ServerSentEvent(
+                    event="token",
+                    data=json.dumps({"text": message_chunk.content}),
+                )
+
+    yield ServerSentEvent(event="done", data='{"status":"completed"}')
+```
+
+In production, introduce an explicit mapper/allowlist between LangGraph and SSE. Do not serialize arbitrary `part["data"]` from every stream mode.
+
+## 7. Does FastAPI Have to Be Written Explicitly?
+
+There are two choices.
+
+### Self-managed application
+
+```text
+Node → LangGraph stream → Your FastAPI endpoint → SSE → Browser
+```
+
+You implement the adapter. This is often suitable for an enterprise ADP system because the existing backend can enforce Entra ID authentication, ADP authorization, audit policy, rate limits, data filtering, and a stable frontend contract.
+
+### LangGraph Agent Server
+
+```text
+Node → LangGraph Agent Server → streaming API/SSE → Browser or SDK
+```
+
+Agent Server supplies run and streaming endpoints. During local development, `langgraph dev` starts an in-memory Agent Server. Managed or standalone deployment options can provide the production server.
+
+Therefore:
+
+> A node emits events, but a web server still exposes them. FastAPI code is optional only when another server layer, such as LangGraph Agent Server, provides that responsibility.
+
+## 8. AIP Agent Execution Example
+
+User request:
+
+> Compare the VOBL runway information in AIP Amendment 08/2026 with the effective ADP dataset.
+
+Possible graph:
+
+```text
+classify_request
+       │
+       ▼
+retrieve_aip_sources
+       │ custom: searching authorized documents
+       │ custom: sources found
+       ▼
+get_effective_aerodata
+       │ custom: reading effective dataset
+       ▼
+validate_candidates
+       │ custom: running deterministic validation
+       ▼
+generate_answer
+       │ messages: final-answer text chunks
+       ▼
+verify_citations
+       │
+       ▼
+complete
+```
+
+FastAPI converts only approved events:
+
+```text
+custom status       → SSE status
+safe source record  → SSE source
+LLM message chunk   → SSE token
+sanitized exception → SSE error
+graph completion    → SSE done
+```
+
+The graph nodes perform retrieval, tool orchestration, and validation. SSE merely communicates progress and results.
+
+## 9. Agent Latency Design
+
+Agent latency is not automatically acceptable. An agent is normally slower than an ordinary API or a simple RAG request because each planning step, retrieval operation, tool invocation, validation, retry, and model call can add another network round trip.
+
+```text
+Total completion latency ≈
+    classification
+  + document retrieval
+  + model planning
+  + sequential tool calls
+  + deterministic validation
+  + final model generation
+```
+
+For example, the elapsed time accumulates when every operation is sequential:
+
+```text
+Search documents: 2 seconds
+Database lookup:   1 second
+Validation:        3 seconds
+Model calls:       5 seconds
+Total:            11+ seconds
+```
+
+These numbers are illustrative. Production targets must be established and measured against the selected models, infrastructure, datasets, and network.
+
+### Perceived latency versus completion latency
+
+**Perceived latency** is how long the user waits before seeing useful feedback:
+
+```text
+Request accepted
+Searching documents...
+Validating candidate changes...
+```
+
+SSE improves perceived responsiveness by exposing safe progress and partial output. It does not reduce the underlying execution time.
+
+**Completion latency** is the time required for the entire workflow to finish. Redis and SSE cannot turn a several-minute amendment analysis into a fast computation; they only communicate its state.
+
+### Route by request complexity
+
+| AIP request | Execution path |
+|---|---|
+| “What does AIRAC mean?” | Direct RAG without an agent loop |
+| “Find VOBL runway information” | RAG plus, at most, a focused lookup tool |
+| “Compare this amendment with effective data” | Bounded agent workflow |
+| “Analyze the complete amendment” | Durable background job through Service Bus |
+| “Publish approved changes” | Deterministic workflow with explicit human approval |
+
+The fastest agent step is the unnecessary step that is not executed. Do not send every question through the most complex graph.
+
+### Control latency deliberately
+
+- Classify requests and route simple questions around the agent loop.
+- Ingest and index AIP documents before query time.
+- Limit graph iterations, model calls, and tool calls.
+- Use async database, HTTP, MCP, search, and model clients.
+- Run independent nodes concurrently.
+- Cache only versioned, permission-safe, non-sensitive results.
+- Use smaller or faster models for narrow routing tasks when evaluation proves them sufficient.
+- Apply per-node and whole-run timeouts with bounded retries.
+- Use deterministic code instead of another model call for rules and validation.
+- Stream safe progress immediately.
+- Move work that exceeds the interactive latency budget to a durable background workflow.
+
+Independent operations can often use fan-out/fan-in execution:
+
+```text
+Sequential
+──────────
+Search AIP → Read database → Find dependencies → Combine
+
+Parallel
+────────
+              ┌─ Search AIP ──────────┐
+Start ────────┼─ Read database ───────┼─ Combine
+              └─ Find dependencies ───┘
+```
+
+Parallel execution reduces elapsed time from approximately the sum of independent operations toward the duration of the slowest branch. LangGraph supports parallel graph branches, but only independent operations should run concurrently.
+
+### Measure instead of assuming
+
+Track latency separately for each request class:
+
+```text
+request acceptance
+time to first status
+retrieval duration
+each tool duration
+time to first answer token
+total run duration
+queue waiting time
+```
+
+Monitor percentiles such as p50, p95, and p99 rather than relying on averages. Use trace IDs and sanitized timing data so performance can be diagnosed without exposing prompts or retrieved content.
+
+> Agent latency is acceptable only when the workflow is classified correctly, bounded, observable, and moved to background processing when necessary. In ADP, correctness is more important than raw speed, but the Workbench must provide immediate and truthful progress feedback.
+
+## 10. PII and Confidential-Data Risk
+
+Production observability can become a data-leak path:
+
+```text
+User prompt
+   ↓
+LangGraph state
+   ↓
+Retrieved documents and tool results
+   ↓
+LLM input/output
+   ↓
+Trace or application log
+   ↓
+Support engineer
+```
+
+Potentially sensitive fields include:
+
+- Names, email addresses, employee IDs, and session identifiers.
+- User questions and full conversation history.
+- Retrieved document text.
+- Tool arguments and results.
+- Graph state and checkpoints.
+- Model responses and generated artifacts.
+- Proprietary aeronautical-production information that is confidential even when it is not PII.
+
+### Safe support model
+
+| Access level | Visible information | Typical audience |
+|---|---|---|
+| Operational | Trace ID, node/tool name, status, timing, error code | Production support |
+| Redacted | Masked inputs/outputs and selected source identifiers | Authorized AI support |
+| Raw | Original sensitive evidence | Exceptional break-glass investigators |
+
+Raw access should be exceptional, approved, time-limited, justified, and audited.
+
+Support should begin with data such as:
+
+```json
+{
+  "trace_id": "abc-123",
+  "node": "retrieve_aip_sources",
+  "status": "failed",
+  "error_code": "SEARCH_TIMEOUT",
+  "document_ids": ["AMDT-08-2026"],
+  "duration_ms": 4200
+}
+```
+
+Do not log raw prompts and documents by default.
+
+## 11. Protecting SSE Output
+
+After sensitive text reaches the browser, it cannot be recalled.
+
+```text
+LLM output → output policy/PII check → SSE → Browser
+```
+
+For low-risk text, an incremental filter may inspect bounded chunks before sending them. For high-risk workflows, buffer the complete answer, validate it, and only then return it. This sacrifices the token-by-token experience but gives stronger disclosure protection.
+
+Never display raw internal exceptions through SSE. Return a stable error code and trace ID:
+
+```text
+event: error
+data: {"code":"ADP_SEARCH_FAILED","trace_id":"abc-123"}
+```
+
+## 12. LangSmith Sensitive-Data Configuration
+
+### Safest production baseline
+
+Configure these values in the application runtime environment and restart/redeploy the application:
+
+```env
+LANGSMITH_TRACING=true
+LANGSMITH_PROJECT=adp-production-sanitized
+LANGSMITH_HIDE_INPUTS=true
+LANGSMITH_HIDE_OUTPUTS=true
+LANGSMITH_HIDE_METADATA=true
+```
+
+This preserves run structure and operational signals while hiding trace payloads and metadata.
+
+### Disable tracing for a sensitive operation
+
+```python
+import langsmith as ls
+
+
+with ls.tracing_context(enabled=False):
+    result = await graph.ainvoke(sensitive_input)
+```
+
+Use this for zero-retention users, restricted documents, PII-heavy requests, or operations whose content must never be traced.
+
+### Selectively anonymize inputs and outputs
+
+Use this only when the organization has approved storing redacted content:
+
+```python
+from langsmith import Client
+from langsmith.anonymizer import create_anonymizer
+
+
+anonymizer = create_anonymizer([
+    {
+        "pattern": r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}",
+        "replace": "<EMAIL>",
+    },
+    {
+        "pattern": r"\b\d{10}\b",
+        "replace": "<PHONE_NUMBER>",
+    },
+])
+
+safe_client = Client(
+    anonymizer=anonymizer,
+    hide_metadata=True,
+)
+```
+
+Apply the client to the graph execution:
+
+```python
+import langsmith as ls
+
+
+with ls.tracing_context(client=safe_client):
+    result = await graph.ainvoke(input_data)
+```
+
+Complete hiding and selective anonymization are alternative policies. If inputs and outputs are completely hidden, there is no payload for the anonymizer to retain in redacted form.
+
+Regex masking is not sufficient for every type of PII. For broader detection, consider an approved PII detection system such as Microsoft Presidio and validate its recall against organization-specific data.
+
+### Important scope limitation
+
+LangSmith settings protect LangSmith traces. They do not automatically sanitize:
+
+- FastAPI or Uvicorn logs.
+- Azure Application Insights or OpenTelemetry exports.
+- Container/platform logs.
+- Database audit tables.
+- Service Bus dead-letter messages.
+- Redis values or streams.
+- Browser telemetry and analytics.
+
+Each sink requires its own allowlist, redaction, retention, and access policy.
+
+## 13. Verification Checklist
+
+Before enabling production traffic:
+
+- [ ] Send synthetic email, phone, employee ID, and confidential-marker values.
+- [ ] Inspect parent and child LangGraph/LangSmith runs.
+- [ ] Inspect tool inputs, outputs, errors, metadata, and checkpoints.
+- [ ] Inspect FastAPI, platform, Application Insights, and broker logs.
+- [ ] Verify the browser receives only allowlisted SSE event fields.
+- [ ] Verify exceptions are sanitized.
+- [ ] Verify support roles cannot view raw content.
+- [ ] Exercise and audit the break-glass process.
+- [ ] Confirm retention and deletion policies.
+- [ ] Test cancellation and browser disconnect cleanup.
+- [ ] Test that high-risk outputs are validated before disclosure.
+- [ ] Define interactive and background latency budgets by request type.
+- [ ] Record time to first status, time to first token, and total duration.
+- [ ] Verify graph iteration, retry, timeout, and tool-call limits.
+- [ ] Confirm independent retrieval and analysis nodes run concurrently where safe.
+
+## 14. Interview Summary
+
+> For the AIP chatbot, I use asynchronous Python for non-blocking model, retrieval, MCP, and network calls. FastAPI exposes an SSE channel that carries allowlisted progress, citation, token, error, and completion events to the browser. LangGraph nodes emit domain progress through custom events, while the runtime automatically exposes node updates and model-message chunks. FastAPI—or LangGraph Agent Server—translates those events into an HTTP stream. I route simple questions through direct RAG, bound interactive agent workflows, execute independent nodes concurrently, and move complete-amendment processing to durable background jobs. Redis Streams is not a substitute for `asyncio` or SSE; it is optional infrastructure for replayable events between distributed services. In production, raw graph state is never sent to the browser or general support tooling. LangSmith inputs, outputs, and metadata are hidden or anonymized, sensitive executions can disable tracing, and all other telemetry sinks receive the same data-minimization treatment.
+
+## 15. References and Learning Resources
+
+- [Python `asyncio` documentation](https://docs.python.org/3/library/asyncio.html)
+- [FastAPI concurrency and `async`/`await`](https://fastapi.tiangolo.com/async/)
+- [FastAPI Server-Sent Events](https://fastapi.tiangolo.com/tutorial/server-sent-events/)
+- [MDN: Using Server-Sent Events](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events/Using_server-sent_events)
+- [Redis Streams documentation](https://redis.io/docs/latest/develop/data-types/streams/)
+- [LangGraph streaming](https://docs.langchain.com/oss/python/langgraph/streaming)
+- [LangGraph Graph API and parallel execution](https://docs.langchain.com/oss/python/langgraph/use-graph-api)
+- [LangGraph local Agent Server](https://docs.langchain.com/oss/python/langgraph/local-server)
+- [LangGraph Agent Server architecture](https://docs.langchain.com/langsmith/agent-server)
+- [LangSmith: Prevent logging sensitive data](https://docs.langchain.com/langsmith/mask-inputs-outputs)
+- [LangSmith conditional tracing](https://docs.langchain.com/langsmith/conditional-tracing)
+- [Video: Server-Sent Events with Next.js and FastAPI](https://www.youtube.com/watch?v=Yfj3jfKL_AQ)
+- [Video: LLM-style streaming with FastAPI and SSE](https://www.youtube.com/watch?v=hOAAg1WaZh8)
+- [Video: SSE in FastAPI for real-time notifications](https://www.youtube.com/watch?v=tOyUQuZ6bhg)
