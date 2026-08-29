@@ -1,6 +1,6 @@
-# MCP Foundations for an ADP Agentic AI Interview
+# MCP and A2A Foundations for an ADP Agentic AI Interview
 
-This is a self-contained interview reference for explaining Model Context Protocol (MCP), designing MCP servers, and applying them to an Aeronautical Data Production (ADP) agent workflow.
+This is a self-contained interview reference for explaining Model Context Protocol (MCP), Agent2Agent Protocol (A2A), designing governed integrations, and applying them to an Aeronautical Data Production (ADP) agent workflow.
 
 The technical descriptions target MCP protocol revision `2026-07-28`. Older hosts may implement earlier revisions, so production systems must negotiate or explicitly support the versions required by their clients.
 
@@ -1344,11 +1344,201 @@ It standardizes connectivity, not correctness. Poorly designed tools, overly bro
 >
 > I would use Streamable HTTP for remote production servers, Entra ID/OAuth for identity, managed identities for downstream APIs, and OpenTelemetry for tracing. I would test tool contracts independently and then evaluate whether the model selects the correct tools, produces valid arguments, cites sources, respects denial, and abstains when evidence is missing.
 
-## 28. One-Sentence Design Principle
+## 28. How A2A Supports the ADP Architecture
+
+### 28.1 The purpose of A2A
+
+Agent2Agent Protocol, or A2A, standardizes collaboration between independently operated agents. It allows agents implemented by different teams, frameworks, languages, or vendors to discover capabilities, delegate stateful work, exchange messages, monitor progress, and receive artifacts without exposing their private prompts, tools, memory, or internal reasoning.
+
+MCP and A2A operate at different boundaries:
+
+| MCP | A2A |
+|---|---|
+| Connects an agent to tools, resources, and prompts | Connects one independent agent to another |
+| Discovers tool and resource contracts | Discovers agents and their skills through Agent Cards |
+| Performs tool calls | Delegates and manages tasks |
+| Returns tool results or resources | Returns task status and artifacts |
+| The server need not contain an LLM | The remote service normally owns its own agent and orchestration |
+| Best within a domain or application boundary | Best across ownership, deployment, or trust boundaries |
+
+> MCP gives an agent hands; A2A lets independently operated brains collaborate.
+
+A2A does not replace MCP, REST APIs, Service Bus, Kafka, workflow engines, deterministic validation, or human approval.
+
+### 28.2 ADP architecture with MCP and A2A
+
+```mermaid
+flowchart TD
+    USER[ADP Specialist] --> CHAT[ADP Workbench and Chat]
+    CHAT --> COORD[ADP Coordinator Agent and A2A Client]
+    COORD -->|A2A task| SOURCE[Source Intelligence Agent]
+    COORD -->|A2A task| VALIDATE[Aeronautical Validation Agent]
+    COORD -->|A2A task| IMPACT[Impact Analysis Agent]
+    COORD -->|A2A task| WORKFLOW[Workflow Agent]
+    SOURCE --> DOCMCP[Document MCP Client and Server]
+    VALIDATE --> VALMCP[Validation MCP Client and Server]
+    IMPACT --> DATAMCP[Aeronautical Data MCP Client and Server]
+    WORKFLOW --> WFMCP[Workflow MCP Client and Server]
+    DOCMCP --> DOCS[AIP, ICAO and Source Documents]
+    VALMCP --> RULES[AIXM, Temporal and Geospatial Rules]
+    DATAMCP --> ADP[Approved ADP APIs and PostGIS]
+    WFMCP --> REVIEW[Draft and Human Review Systems]
+```
+
+The coordinator owns the user conversation, decomposes the request, chooses approved specialist agents, monitors delegated tasks, combines their artifacts, and presents the result for human review. Each specialist agent owns its internal orchestration and uses MCP to access only the tools and data it is authorized to use.
+
+### 28.3 Core A2A primitives
+
+#### Agent Card
+
+An Agent Card is an agent's capability description. It can include:
+
+- Identity, description, provider, and version.
+- Supported protocol interfaces.
+- Skills and their expected inputs and outputs.
+- Default input and output content types.
+- Streaming or push-notification capabilities.
+- Authentication schemes and security requirements.
+- Optional signatures.
+
+In an enterprise ADP deployment, Agent Cards should come from an approved private registry or configured endpoint rather than unrestricted internet discovery.
+
+#### Skill
+
+A skill is a capability advertised by an agent, such as:
+
+```text
+extract-aip-changes
+validate-aeronautical-candidates
+analyze-feature-impact
+prepare-review-work-item
+```
+
+A skill is broader than an MCP tool. The remote agent may plan and invoke several private tools to complete one skill.
+
+#### Message
+
+A Message carries communication between the A2A client and remote agent. It can carry text, files, structured data, task or context identifiers, metadata, and references to related work.
+
+#### Task
+
+A Task is a stateful unit of delegated work. Its status allows the coordinator to determine whether the work is running, waiting for more input, completed, failed, rejected, cancelled, or requires authentication. Long-running work can expose streamed updates or asynchronous push notifications.
+
+#### Part and Artifact
+
+A Part is an individual content component, such as text, a file, or structured data. An Artifact is an output produced by a task and can contain one or more parts. ADP artifacts should carry source provenance, effective time, dataset version, validation status, and correlation identifiers.
+
+A2A v1.0 defines JSON-RPC, gRPC, and HTTP+JSON protocol bindings and supports synchronous, streaming, and asynchronous collaboration patterns. [A2A v1.0 specification](https://a2a-protocol.org/v1.0.0/specification/)
+
+### 28.4 Example: analyzing an AIP amendment
+
+An ADP specialist asks:
+
+> Analyze AIP Amendment 08/2026 for VOBL and identify potentially affected aeronautical data.
+
+The workflow is:
+
+1. The Coordinator Agent interprets the request and selects approved agents by inspecting their Agent Cards and advertised skills.
+2. It sends an A2A Message and creates a Task for the Source Intelligence Agent.
+3. The Source Intelligence Agent uses its document MCP capabilities to retrieve the authorized amendment, extract candidate changes, and preserve page and section citations.
+4. It returns an Artifact such as `candidate_changes.json` with document provenance.
+5. The coordinator delegates the candidates to the Aeronautical Validation Agent.
+6. The Validation Agent uses AIXM, effective-date, unit, database, and geospatial MCP tools. It returns a structured validation-report artifact.
+7. The Impact Analysis Agent checks affected procedures, runways, navaids, airways, obstacles, charts, and dependent datasets.
+8. The coordinator combines the artifacts and explains findings, uncertainty, evidence, and required review actions in the chatbot.
+9. With user confirmation, the Workflow Agent may create a draft review item. It cannot publish production aeronautical data without the required deterministic checks and human approval.
+
+Example response:
+
+```text
+Three candidate changes were found.
+
+- Two passed deterministic validation.
+- One runway-distance change requires manual review.
+- Four procedures and two chart products may be affected.
+- No production data has been modified.
+
+Would you like me to create a review work item?
+```
+
+### 28.5 A2A compared with brokers
+
+| Technology | Primary responsibility | ADP example |
+|---|---|---|
+| A2A | Agent discovery, delegation, messages, task state, and artifacts | Coordinator delegates amendment analysis to a specialist agent |
+| MCP | Governed agent access to tools and contextual data | Specialist reads an AIP page or validates an AIXM candidate |
+| Azure Service Bus | Reliable commands, queues, delivery, retries, and dead-lettering | Run a durable validation job or create a work item |
+| Kafka | High-throughput domain events and replayable event history | Publish `AeronauticalCandidateValidated` for downstream consumers |
+| Redis Streams | Lightweight internal stream processing | Distribute short-lived jobs inside one service boundary |
+
+For example:
+
+```text
+Coordinator ──A2A Task──► Validation Agent
+                              │
+                              └──Service Bus──► Validation workers
+
+Validation completed ──Kafka event──► Audit, analytics and downstream systems
+```
+
+A2A defines the collaboration semantics. A broker provides durable delivery and processing. A broker message by itself does not provide portable agent discovery, skills, task, message, or artifact semantics.
+
+### 28.6 When to introduce A2A
+
+Use A2A when:
+
+- Different teams or vendors own the participating agents.
+- Agents are independently deployed, secured, scaled, and versioned.
+- Agents use different frameworks or programming languages.
+- Internal implementation, prompts, memory, and tools must remain private.
+- Long-running delegation needs task status, streaming, cancellation, or later retrieval.
+- A reusable agent capability must be available to more than one product.
+
+Do not introduce A2A merely to split one application into fashionable micro-agents. Keep a single agent host with MCP tools when:
+
+- All capabilities have the same owner and deployment lifecycle.
+- Operations are deterministic functions rather than autonomous work.
+- A direct MCP tool or ordinary API call is sufficient.
+- Low latency and operational simplicity are more valuable than agent-level federation.
+
+Recommended evolution:
+
+```text
+Stage 1: One ADP agent host + focused MCP servers + durable broker
+Stage 2: Expose one independently valuable specialist as an A2A server
+Stage 3: Federate independently owned ADP, charting, validation, or planning agents
+```
+
+### 28.7 Security and safety controls
+
+For an aviation-data workflow:
+
+- Resolve agents only through a private allowlisted registry or trusted configuration.
+- Verify endpoint identity and Agent Card signatures where used.
+- Authenticate the calling service and propagate user authority deliberately.
+- Do not pass broad user tokens or production credentials between agents.
+- Authorize each requested skill, dataset, geography, and action.
+- Treat remote messages and artifacts as untrusted input.
+- Validate artifacts with JSON Schema and deterministic domain rules.
+- Include document identity, page or section, dataset version, and effective time.
+- Propagate correlation, user, work-item, task, and causation identifiers.
+- Record which agent version received and produced each artifact.
+- Set deadlines, cancellation rules, retry limits, cost limits, and maximum delegation depth.
+- Prevent circular or uncontrolled delegation.
+- Send references to governed resources instead of copying unnecessary sensitive documents.
+- Require an exact preview and human approval before safety-significant writes or publication.
+
+A2A advertises authentication and security requirements, but every service must still enforce authorization and domain policy in code.
+
+### 28.8 Interview-ready A2A answer
+
+> In the ADP architecture, MCP connects an agent to authorized aeronautical tools and data, while A2A connects independently deployed specialist agents. A coordinator discovers approved capabilities through Agent Cards, delegates stateful tasks, monitors status, and receives traceable artifacts. A source agent can extract cited candidate changes, a validation agent can apply deterministic AIXM and geospatial checks, and an impact agent can find affected products. Each specialist uses MCP internally, while Service Bus or Kafka provides durable jobs and events. I would start with one agent and MCP servers, then introduce A2A only at genuine ownership, deployment, or trust boundaries. All returned artifacts remain untrusted until schema and domain validation, and production changes require human approval.
+
+## 29. One-Sentence Design Principle
 
 > Expose the smallest typed business capability the agent needs, enforce authority in code rather than prompts, return versioned source-backed results, and keep safety-significant approval with the human.
 
-## 29. Final Study Checklist
+## 30. Final Study Checklist
 
 Before the interview, make sure you can explain without notes:
 
@@ -1370,8 +1560,14 @@ Before the interview, make sure you can explain without notes:
 - [ ] ADP server decomposition.
 - [ ] Testing, evaluation, and observability.
 - [ ] Current deprecated features that new designs should avoid.
+- [ ] MCP agent-to-tool communication versus A2A agent-to-agent communication.
+- [ ] Agent Cards, skills, messages, tasks, parts, and artifacts.
+- [ ] How A2A differs from Service Bus, Kafka, and Redis Streams.
+- [ ] When a single host with MCP tools is better than multiple agents.
+- [ ] How an ADP coordinator delegates work to specialist agents.
+- [ ] A2A trust, authorization, provenance, delegation, and approval controls.
 
-## 30. Authoritative References
+## 31. Authoritative References
 
 - [MCP 2026-07-28 Architecture](https://modelcontextprotocol.io/specification/2026-07-28/architecture)
 - [MCP Server Primitives](https://modelcontextprotocol.io/specification/2026-07-28/server/index)
@@ -1381,3 +1577,6 @@ Before the interview, make sure you can explain without notes:
 - [MCP 2026-07-28 Release Overview](https://blog.modelcontextprotocol.io/posts/2026-07-28/)
 - [Official MCP Python SDK v2](https://py.sdk.modelcontextprotocol.io/)
 - [Official MCP Python SDK Getting Started](https://py.sdk.modelcontextprotocol.io/get-started/)
+- [A2A v1.0 Specification](https://a2a-protocol.org/v1.0.0/specification/)
+- [Official A2A Project](https://github.com/a2aproject/A2A)
+- [A2A Protocol Definition](https://github.com/a2aproject/A2A/blob/main/specification/a2a.proto)
